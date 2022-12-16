@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 
 import argparse, socket, time, json, select, struct, sys, math, os, random
-from replica_util import Status # An enum for follower, candidate, leader
-from replica_util import MessageType # An enum for message types
-from replica_util import Timeout # Constants for timeout lengths
+from replica_util import Status  # An enum for follower, candidate, leader
+from replica_util import MessageType  # An enum for message types
+from replica_util import Timeout  # Constants for timeout lengths
 
 BROADCAST = "FFFF"
+
 
 class Replica:
     def __init__(self, port, id, others):
@@ -15,18 +16,18 @@ class Replica:
         self.status = Status.FOLLOWER
         self.term = 0
         self.database = {}
-        self.log = [] # Only committed log entries matter the most - others are expendable and deletable
-        self.leader = -1
+        self.log = []  # Only committed log entries matter the most - others are expendable and deletable
+        self.leader = "FFFF"
 
         self.socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.socket.bind(('localhost', 0))
-        #self.socket.setblocking(False)
-        #self.readable = select.select([self.socket], [], [], 0.1)[0]
+        # self.socket.setblocking(False)
+        # self.readable = select.select([self.socket], [], [], 0.1)[0]
         print("Replica %s starting up" % self.id, flush=True)
-        hello = { "src": self.id, "dst": BROADCAST, "leader": BROADCAST, "type": "hello" }
+        hello = {"src": self.id, "dst": BROADCAST, "leader": BROADCAST, "type": "hello"}
         self.send(hello)
         print("Sent hello message: %s" % hello, flush=True)
-        #print("returning", flush=True)
+        # print("returning", flush=True)
         return
 
     def send(self, message_dict):
@@ -40,7 +41,6 @@ class Replica:
     #         return json.loads(data.decode('utf-8'))
 
     def run(self):
-        print("Hit run")
         # Changed design to return to here rather moving from run_as_X to run_as_Y as the alternative
         # would consume too much memory with all the local scopes being created and not removed
         while True:
@@ -60,8 +60,9 @@ class Replica:
     # Only accept AppendEntriesRPC if prev. index, term match
     # When accepting AppendEntries - Delete all subsequent entries from log
     def run_as_follower(self):
+        voted = False
         print("Running as follower", flush=True)
-        random_timeout_delay = (random.random() * Timeout.ELECTION_TIMEOUT_LENGTH) + Timeout.ELECTION_TIMEOUT_MIN  # in ms
+        random_timeout_delay = (random.random() * Timeout.ELECTION_TIMEOUT_LENGTH) + Timeout.ELECTION_TIMEOUT_MIN  # ms
         print("Random timeout delay", random_timeout_delay, flush=True)
 
         # Timeout [0] is current time, [1] is timeout time, using list to have reference that can be mutated within loop
@@ -71,51 +72,52 @@ class Replica:
         # Loop checking for RPC
 
         while election_timeout[0] < election_timeout[1]:
-            readable = select.select([self.socket], [], [], 0.1)
-            recv_msg_dict = None
+            readable = select.select([self.socket], [], [], 0.01)
             if readable[0]:
+                print("RECEIVED MESSAGE AS FOLLOWER", flush=True)
                 data, addr = self.socket.recvfrom(65535)
                 msg = data.decode('utf-8')
-                print("Received message '%s'" % (msg,), flush=True)
+                print("Received message '%s'" % msg, flush=True)
                 recv_msg_dict = json.loads(msg)
-            else:
-                #print("No message received", flush=True)
-                recv_msg_dict = None
-            if recv_msg_dict is None:
-                election_timeout[0] = time.perf_counter()
-                print("Time: ", election_timeout[0], " Timeout: ", election_timeout[1], flush=True)
-                continue
-            if recv_msg_dict['type'] == MessageType.REQUEST_VOTE:
-                # Check if requester has >= term and index
 
-                this_term = 0
-                this_index = 0
-                if len(self.log) > 0:
-                    this_term = self.log[len(self.log) - 1].term
-                    this_index = self.log[len(self.log) - 1].index
+                if recv_msg_dict['type'] == MessageType.REQUEST_VOTE:
+                    # Check if requester has >= term and index
 
-                if recv_msg_dict['term'] >= this_term:
-                    if recv_msg_dict['index'] >= this_index:
-                        # Send vote and become follower? Or wait for confirmation?
-                        print("Sending vote to %s" % recv_msg_dict['src'])
+                    this_term, this_index = self.get_this_term_this_index()
+
+                    if recv_msg_dict['term'] >= this_term and recv_msg_dict['index'] >= this_index:
+                        if not voted:
+                            # Send vote and become follower? Or wait for confirmation?
+                            print("Sending vote to %s" % recv_msg_dict['src'])
+                            vote_dict = {'src': self.id, 'dst': recv_msg_dict['src'], 'type': MessageType.VOTE_GRANTED,
+                                         'leader': self.leader}
+                            self.send(vote_dict)
+                            voted = True
+
+                    # Send vote, loop until receiving a new leader msg or timeout and reset as candidate
+                    print("Extending election timeout", flush=True)
+                    election_timeout[1] = time.perf_counter() + (random_timeout_delay / 1000)
+                elif recv_msg_dict['type'] == MessageType.APPEND_ENTRIES:
+                    # Reset timeout
+                    print("Extending election timeout", flush=True)
+                    election_timeout[1] = time.perf_counter() + (random_timeout_delay / 1000)
+
+                    # Check if sender should be new leader
+                    this_term, this_index = self.get_this_term_this_index()
+                    if recv_msg_dict['term'] >= this_term and recv_msg_dict['index'] >= this_index:
+                        # Found new leader
                         self.leader = recv_msg_dict['src']
-                        self.status = Status.FOLLOWER
-                        return
+                        print("FOUND NEW LEADER", flush=True)
+                    if recv_msg_dict['mid'] != 0:  # Means not a heartbeat
+                        print("todo", flush=True)
+                        # TODO: Log appending, state change
 
-                # Send vote, loop until receiving a new leader msg or timeout and reset as candidate
-                print("Extending election timeout", flush=True)
-                election_timeout[1] = time.perf_counter() + (random_timeout_delay / 1000)
-            elif recv_msg_dict['type'] == MessageType.APPEND_ENTRIES:
-                # Reset timeout
-                print("Extending election timeout", flush=True)
-                election_timeout[1] = time.perf_counter() + (random_timeout_delay / 1000)
-                print("todo", flush=True)
-                #TODO: Log appending, state change
+                # Checks if msg type is get or put and redirects
+                self.handle_get_put_follower(recv_msg_dict)
 
-            # Checks if msg type is get or put and redirects
-            self.handle_get_put_follower(recv_msg_dict)
+            # Outside of message check
             election_timeout[0] = time.perf_counter()
-            print("Time: ", election_timeout[0], " Timeout: ", election_timeout[1], flush=True)
+            # print("Time: ", election_timeout[0], " Timeout: ", election_timeout[1], flush=True)
 
         print("Election Timeout", flush=True)
         # election timeout hit - start an election and become candidate
@@ -129,10 +131,10 @@ class Replica:
     # Note: Deny vote from other server if they have a higher term in log or (equal term and higher log index)
     # Server with lower index can still win - remember to look at log
     def run_as_candidate(self):
-        print("running as candidate", flush=True)
-        readable = select.select([self.socket], [], [], 0.1)
+        print("Running as candidate", flush=True)
+        readable = select.select([self.socket], [], [], 0.01)
         self.term += 1
-        random_timeout_delay = (random.random() * Timeout.ELECTION_TIMEOUT_LENGTH) + Timeout.ELECTION_TIMEOUT_MIN  # in ms
+        random_timeout_delay = (random.random() * Timeout.ELECTION_TIMEOUT_LENGTH) + Timeout.ELECTION_TIMEOUT_MIN  # ms
         # send request vote RPCs, have new election timeout, wait for >n/2 votes or a new leader msg
         votes = 1
 
@@ -141,7 +143,7 @@ class Replica:
             msg_dict = {'src': self.id, 'dst': BROADCAST,
                         'leader': "FFFF",
                         'type': MessageType.REQUEST_VOTE,
-                        'term': 0, 'id': self.id, 'index': 0} # Use term variable or term stored in log?
+                        'term': 0, 'id': self.id, 'index': 0}  # Use term variable or term stored in log?
         else:
             msg_dict = {'src': self.id, 'dst': BROADCAST,
                         'leader': "FFFF",
@@ -150,16 +152,20 @@ class Replica:
         self.send(msg_dict)
 
         # Loop while collecting votes
-        election_end_time = [time.perf_counter() + (random_timeout_delay/1000)]
+        election_end_time = [time.perf_counter() + (random_timeout_delay / 1000)]
         while time.perf_counter() < election_end_time[0]:
-            if readable[0]:
+            if readable[0]:  # If receiving a message
+                print("RECEIVED A MESSAGE AS CANDIDATE", flush=True)
                 data, addr = self.socket.recvfrom(65535)
                 msg = data.decode('utf-8')
                 print("Received message '%s'" % (msg,), flush=True)
                 recv_msg_dict = json.loads(msg)
 
-                votes = self.parse_msg_as_candidate(recv_msg_dict, votes)
-                if votes >= ((len(self.others) + 1) / 2) + 1:
+                if recv_msg_dict['type'] == MessageType.VOTE_GRANTED:
+                    votes += 1
+                    print("RECEIVED VOTE", flush=True)
+                    print(votes, flush=True)
+                if votes >= ((len(self.others) + 1) / 2):
                     self.status = Status.LEADER
                     return
                 if recv_msg_dict['type'] == MessageType.APPEND_ENTRIES:
@@ -174,9 +180,7 @@ class Replica:
                 elif recv_msg_dict['type'] == MessageType.REQUEST_VOTE:
                     print("Requested for vote, doing nothing", flush=True)
 
-
-
-        #TODO: Send fail responses so clients retry during this phase?
+        # TODO: Send fail responses so clients retry during this phase?
 
         # If timeout - restart election as candidate
         print("Candidate Timeout", flush=True)
@@ -193,22 +197,23 @@ class Replica:
     # Keep a nextIndex for each follower - start at leader's latest index + 1
     #   - decrement each time AppendEntries consistency check fails
     def run_as_leader(self):
-        print(self.id, " running as LEADER", flush=True)
+        print(self.id, " Running as LEADER", flush=True)
         self.leader = self.id
         readable = select.select([self.socket], [], [], 0.01)
 
-        heartbeat_time = [time.perf_counter() + (Timeout.HEARTBEAT/1000)]  # Allows it to be a reference
+        heartbeat_time = [time.perf_counter() + (Timeout.HEARTBEAT / 1000)]  # Allows it to be a reference
         while True:
-
+            print("LEADER LOOP", flush=True)
             # Broadcast heartbeat every HEARTBEAT time that elapses
             if time.perf_counter() > heartbeat_time[0]:
                 heartbeat_dict = {'src': self.id, 'dst': BROADCAST, 'leader': self.leader,
                                   'type': MessageType.APPEND_ENTRIES,
                                   'term': 0, 'index': 0, 'mid': 0, 'key': 0, 'value': 0}
                 self.send(heartbeat_dict)
-                heartbeat_time[0] = time.perf_counter() + (Timeout.HEARTBEAT/1000)
+                heartbeat_time[0] = time.perf_counter() + (Timeout.HEARTBEAT / 1000)
 
             if readable[0]:
+                print("LEADER RECEIVING MESSAGE", flush=True)
                 data, addr = self.socket.recvfrom(65535)
                 msg = data.decode('utf-8')
                 print("Received message '%s'" % (msg,), flush=True)
@@ -222,7 +227,6 @@ class Replica:
                                        'type': MessageType.FAIL, 'mid': recv_msg_dict['MID']}
                     self.send(temp_reply_dict)
 
-
         # Should never hit here
         print("WARNING: LEADER %d HIT RETURN" % self.id)
         return
@@ -230,7 +234,7 @@ class Replica:
     # Redirect any gets or puts as a follower
     def handle_get_put_follower(self, received_msg_dict):
         if received_msg_dict['type'] == MessageType.GET or received_msg_dict['type'] == MessageType.PUT:
-            #needs src, dst, leader, type, mid
+            # needs src, dst, leader, type, mid
             src = self.id
             print("msg src = ", received_msg_dict['dst'], "id = ", self.id)
             dst = received_msg_dict['src']
@@ -241,9 +245,10 @@ class Replica:
             self.send(msg_dict_to_send)
         return
 
-    def parse_msg_as_candidate(self, recv_msg_dict, votes):
+    def parse_vote_as_candidate(self, recv_msg_dict, votes):
         if recv_msg_dict['type'] == MessageType.VOTE_GRANTED:
             votes += 1
+            print("RECEIVED VOTE", flush=True)
         return votes
 
     def get_from_database(self, recv_msg_dict):

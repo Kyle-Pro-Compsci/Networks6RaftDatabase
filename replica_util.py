@@ -11,15 +11,16 @@ class MessageType:
     VOTE_GRANTED = 'vote_granted'
     REDIRECT = 'redirect'
     APPEND_ENTRIES = 'append_entries'  # [latest_term, latest_index, last_term,, last_index
-    READY_TO_COMMIT = 'ready_to_commit'
+    READY_TO_COMMIT = 'ready_to_commit' # followers to leader
+    CONFIRM_COMMIT = 'confirm_commit' # leader to followers
     OK = 'ok'
     FAIL = 'fail'
 
 
 class Timeout:
-    ELECTION_TIMEOUT_MIN = 150 # Timeout for a follower to start an election
+    ELECTION_TIMEOUT_MIN = 200 # Timeout for a follower to start an election
     ELECTION_TIMEOUT_LENGTH = 150
-    HEARTBEAT = 100
+    HEARTBEAT = 80
 
 
 # Updated for puts
