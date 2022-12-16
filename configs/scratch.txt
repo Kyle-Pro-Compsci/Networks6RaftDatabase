@@ -1,0 +1,24 @@
+Log:
+Keep a running log - Contain the action and the term number
+
+Messages routed locally by the simulator - using src and dst
+Must have: src, dst, leader (ID, FFFF if unknown), type
+type can be modified for own messages - just need get, put, redirect
+respond with ok - if key not present, just return empty
+
+Need a way to convert log to state
+
+When receiving a PUT
+if Follower: redirect to leader
+if Candidate: ??
+if Leader: Add to log - keep uncommitted - send to followers - wait until have a majority to commit - get enough OKs:
+commit, tell replicas to commit (LOG replication)
+
+Leader election:
+
+If a node goes offline - keep tracking it
+
+Only vote or replicas with >= term, log at least as up to date
+
+5 second delay before client requests are received
+ - if requests received during an election - queue up - redirect if follower,
