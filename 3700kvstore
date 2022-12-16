@@ -108,10 +108,13 @@ class Replica:
                     if recv_msg_dict['term'] >= this_term and recv_msg_dict['index'] >= this_index:
                         # Found new leader
                         self.leader = recv_msg_dict['src']
-                        print("FOUND NEW LEADER", flush=True)
+                        # print("FOUND NEW LEADER", flush=True)
                     if recv_msg_dict['MID'] != 0:  # Means not a heartbeat
                         print("todo", flush=True)
                         # TODO: Log appending, state change
+                        ready_dict = {'src': self.id, 'dst': self.leader, 'type': MessageType.READY_TO_COMMIT,
+                                      'leader': self.leader}
+                        self.send(ready_dict)
 
                 # Checks if msg type is get or put and redirects
                 self.handle_get_put_follower(recv_msg_dict)
@@ -251,6 +254,10 @@ class Replica:
                     if uncommitted_logs[mid] > (len(self.others) + 1) / 2:
                         # Ready to commit
                         log_entry = self.get_log_entry_matching_mid(mid)
+                        self.database[log_entry.key] = log_entry.value
+
+                        # TODO: Send Confirm Commit
+
 
 
 
